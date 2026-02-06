@@ -2,97 +2,166 @@
 
 ## Overview
 
-EchoLearn is a browser extension that transforms passive note-taking into an active learning companion through AI-powered semantic understanding and contextual retrieval. The system consists of a floating notepad interface, local AI processing for semantic embeddings, and intelligent note retrieval based on webpage content analysis.
+EchoLearn is an AI-powered browser extension that transforms passive note-taking into an active learning companion through semantic understanding and contextual retrieval. The system consists of a floating notepad interface, AWS-powered AI processing for semantic embeddings, and intelligent note retrieval based on webpage content analysis.
 
-The architecture prioritizes privacy by keeping all processing local to the browser, using Transformers.js for embedding generation and IndexedDB for vector storage. This approach eliminates external API dependencies while providing fast, offline-capable semantic search.
+**Architecture Philosophy:** This design follows an MVP-first approach optimized for hackathon demonstration. The architecture uses a simplified AWS stack (6 core services) that can be extended post-hackathon without changing the product design. Vector embeddings are stored directly in DynamoDB, which is acceptable for MVP scale (hundreds/thousands of notes) and avoids the complexity of dedicated vector databases.
 
 ## Architecture
 
 ### High-Level Architecture
 
+```
+Browser Extension
+       |
+   API Gateway
+       |
+    Lambda
+   /   |    \
+Bedrock DynamoDB  S3
+```
+
+**Core Components:**
+- **Browser Extension**: React-based UI with floating notepad, screenshot tool, diagram canvas, and chat interface
+- **API Gateway**: RESTful API endpoints for note operations and context matching
+- **AWS Lambda**: Serverless compute for AI processing, embedding generation, and similarity matching
+- **Amazon Bedrock**: AI service for embeddings generation, summarization, and chat responses
+- **DynamoDB**: NoSQL database storing notes, metadata, and embedding vectors
+- **S3**: Object storage for screenshots and diagram images
+- **Cognito (Optional)**: User authentication and authorization
+
+### Simplified Architecture Diagram
+
 ```mermaid
 graph TB
-    subgraph "Browser Extension"
+    subgraph "Client Layer"
+        EXT[Browser Extension]
         UI[Floating Notepad UI]
-        CS[Content Script]
-        SW[Service Worker]
+        SS[Screenshot Tool]
+        DC[Diagram Canvas]
+        CH[Chat Window]
+        CM[Context Monitor]
+    end
+    
+    subgraph "API Layer"
+        GW[API Gateway]
+    end
+    
+    subgraph "Lambda Backend"
+        LH[Lambda Handler]
         
-        subgraph "AI Processing Layer"
-            EM[Embedding Model]
-            CA[Context Analyzer]
-            RS[Retrieval System]
-        end
-        
-        subgraph "Storage Layer"
-            VS[Vector Store]
-            IDB[(IndexedDB)]
-            LS[Local Storage]
-        end
-        
-        subgraph "Chat System"
-            CH[Chat Assistant]
-            CM[Context Manager]
+        subgraph "Services"
+            EMB[Embedding Service]
+            MAT[Matching Service]
+            CHT[Chat Service]
         end
     end
     
-    subgraph "Web Page"
-        WC[Web Content]
-        DOM[DOM Elements]
+    subgraph "AI Layer"
+        BR[Amazon Bedrock]
+        BREMB[Embeddings]
+        BRSUM[Summarize]
+        BRLLM[LLM]
     end
     
-    UI --> SW
-    CS --> CA
-    CS --> WC
-    CA --> EM
-    EM --> VS
-    VS --> IDB
-    RS --> VS
-    SW --> RS
-    UI --> CH
-    CH --> CM
-    CM --> VS
+    subgraph "Data Layer"
+        DDB[(DynamoDB)]
+        S3B[(S3 Bucket)]
+    end
     
-    classDef ai fill:#e1f5fe
-    classDef storage fill:#f3e5f5
-    classDef ui fill:#e8f5e8
+    UI --> EXT
+    SS --> EXT
+    DC --> EXT
+    CH --> EXT
+    CM --> EXT
     
-    class EM,CA,RS,CH,CM ai
-    class VS,IDB,LS storage
-    class UI,CS ui
+    EXT --> GW
+    GW --> LH
+    
+    LH --> EMB
+    LH --> MAT
+    LH --> CHT
+    
+    EMB --> BR
+    MAT --> BR
+    CHT --> BR
+    
+    BR --> BREMB
+    BR --> BRSUM
+    BR --> BRLLM
+    
+    EMB --> DDB
+    MAT --> DDB
+    SS --> S3B
+    DC --> S3B
+    
+    classDef client fill:#e3f2fd
+    classDef api fill:#f3e5f5
+    classDef compute fill:#e8f5e9
+    classDef ai fill:#fff3e0
+    classDef storage fill:#fce4ec
+    
+    class EXT,UI,SS,DC,CH,CM client
+    class GW api
+    class LH,EMB,MAT,CHT compute
+    class BR,BREMB,BRSUM,BRLLM ai
+    class DDB,S3B storage
 ```
 
 ### Component Interaction Flow
 
-1. **Content Analysis**: Content script analyzes webpage content and sends to service worker
-2. **Embedding Generation**: Service worker uses Transformers.js to generate embeddings
-3. **Similarity Search**: Vector store performs cosine similarity search against stored notes
-4. **Result Display**: Relevant notes are displayed in the floating notepad interface
-5. **Note Creation**: New notes are processed through the same embedding pipeline
+**Note Creation Flow:**
+1. User writes/pastes content in extension
+2. Extension → POST /notes to API Gateway
+3. Lambda → Bedrock (generate embedding)
+4. Lambda → DynamoDB (store text + embedding vector + metadata)
+5. Lambda → Response with note ID
+
+**Context Matching Flow:**
+1. Extension monitors page content changes
+2. Extension → POST /match with page text
+3. Lambda → Bedrock (generate page embedding)
+4. Lambda → DynamoDB (fetch all user notes)
+5. Lambda → Compute cosine similarity in-memory
+6. Lambda → Return top 3-5 matches
+7. Extension displays relevant notes
+
+**Screenshot/Diagram Flow:**
+1. User captures screenshot or creates diagram
+2. Extension → POST /media with image data
+3. Lambda → S3 (store image)
+4. Lambda → DynamoDB (store metadata + S3 URL)
+5. Lambda → Response with media ID
+
+**Chat Flow:**
+1. User asks question in chat
+2. Extension → POST /chat with message + context
+3. Lambda → Fetch relevant notes from DynamoDB
+4. Lambda → Bedrock LLM (generate response with context)
+5. Lambda → Response with AI answer
 
 ## Components and Interfaces
 
-### 1. Extension Infrastructure
+### 1. Browser Extension (Client Layer)
 
-**Manifest Configuration (Manifest V3)**
-- Service worker for background processing and AI inference
-- Content scripts for webpage interaction and DOM manipulation
-- Permissions for storage, activeTab, and scripting
-- Cross-origin permissions for AI model loading
-
-**Service Worker (Background Processing)**
-```typescript
-interface ServiceWorker {
-  // AI Processing
-  generateEmbedding(text: string): Promise<Float32Array>
-  analyzePageContent(content: PageContent): Promise<EmbeddingResult>
-  
-  // Note Management
-  storeNote(note: Note): Promise<string>
-  searchSimilarNotes(embedding: Float32Array, threshold: number): Promise<Note[]>
-  
-  // Message Handling
-  handleContentScriptMessage(message: ExtensionMessage): Promise<void>
-  handlePopupMessage(message: ExtensionMessage): Promise<void>
+**Extension Manifest (Manifest V3)**
+```json
+{
+  "manifest_version": 3,
+  "name": "EchoLearn",
+  "version": "1.0.0",
+  "permissions": ["storage", "activeTab", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [{
+    "matches": ["<all_urls>"],
+    "js": ["content.js"],
+    "css": ["notepad.css"]
+  }],
+  "action": {
+    "default_popup": "popup.html"
+  }
 }
 ```
 
@@ -107,107 +176,12 @@ interface ContentScript {
   injectFloatingNotepad(): void
   updateNotePadContent(notes: Note[]): void
   
-  // Communication
-  sendToServiceWorker(message: ExtensionMessage): Promise<void>
+  // API Communication
+  sendToBackend(endpoint: string, data: any): Promise<any>
 }
 ```
 
-### 2. AI Processing Components
-
-**Embedding Model (Transformers.js Integration)**
-```typescript
-interface EmbeddingModel {
-  // Model Management
-  loadModel(modelName: string): Promise<void>
-  isModelLoaded(): boolean
-  
-  // Embedding Generation
-  encode(text: string): Promise<Float32Array>
-  batchEncode(texts: string[]): Promise<Float32Array[]>
-  
-  // Model Configuration
-  getModelInfo(): ModelInfo
-  setModelOptions(options: ModelOptions): void
-}
-```
-
-**Context Analyzer**
-```typescript
-interface ContextAnalyzer {
-  // Content Processing
-  extractMainContent(html: string): string
-  cleanAndNormalizeText(text: string): string
-  chunkLongContent(text: string, maxLength: number): string[]
-  
-  // Semantic Analysis
-  generateContentEmbedding(content: PageContent): Promise<Float32Array>
-  extractKeyTopics(text: string): string[]
-  
-  // Content Classification
-  classifyContentType(content: PageContent): ContentType
-  assessContentRelevance(content: PageContent): number
-}
-```
-
-**Retrieval System**
-```typescript
-interface RetrievalSystem {
-  // Similarity Search
-  findSimilarNotes(queryEmbedding: Float32Array, options: SearchOptions): Promise<SearchResult[]>
-  rankResults(results: SearchResult[], context: SearchContext): SearchResult[]
-  
-  // Search Configuration
-  setSearchThreshold(threshold: number): void
-  setMaxResults(maxResults: number): void
-  
-  // Search Analytics
-  getSearchMetrics(): SearchMetrics
-  logSearchQuery(query: SearchQuery): void
-}
-```
-
-### 3. Storage Components
-
-**Vector Store (IndexedDB Integration)**
-```typescript
-interface VectorStore {
-  // Note Storage
-  storeNote(note: Note, embedding: Float32Array): Promise<string>
-  updateNote(noteId: string, note: Note, embedding?: Float32Array): Promise<void>
-  deleteNote(noteId: string): Promise<void>
-  
-  // Vector Operations
-  searchByVector(queryVector: Float32Array, k: number): Promise<SearchResult[]>
-  calculateSimilarity(vector1: Float32Array, vector2: Float32Array): number
-  
-  // Database Management
-  initializeDatabase(): Promise<void>
-  exportData(): Promise<ExportData>
-  importData(data: ExportData): Promise<void>
-  clearAllData(): Promise<void>
-}
-```
-
-**Local Storage Manager**
-```typescript
-interface LocalStorageManager {
-  // Configuration Storage
-  saveUserPreferences(preferences: UserPreferences): Promise<void>
-  loadUserPreferences(): Promise<UserPreferences>
-  
-  // Cache Management
-  cacheModelData(modelId: string, data: ArrayBuffer): Promise<void>
-  getCachedModelData(modelId: string): Promise<ArrayBuffer | null>
-  
-  // Storage Utilities
-  getStorageUsage(): Promise<StorageUsage>
-  cleanupOldData(retentionDays: number): Promise<void>
-}
-```
-
-### 4. User Interface Components
-
-**Floating Notepad**
+**Floating Notepad Component**
 ```typescript
 interface FloatingNotepad {
   // UI Management
@@ -225,6 +199,8 @@ interface FloatingNotepad {
   onNoteCreate(callback: (content: string) => void): void
   onNoteEdit(callback: (noteId: string, content: string) => void): void
   onNoteDelete(callback: (noteId: string) => void): void
+  onScreenshot(callback: (imageData: string) => void): void
+  onDiagramCreate(callback: (diagramData: string) => void): void
   
   // UI State
   setLoadingState(isLoading: boolean): void
@@ -245,10 +221,300 @@ interface ChatAssistant {
   // Context Integration
   setNoteContext(notes: Note[]): void
   setPageContext(content: PageContent): void
+}
+```
+
+### 2. API Gateway Layer
+
+**REST API Endpoints**
+
+```typescript
+// Note Operations
+POST   /notes              // Create new note
+GET    /notes              // List all notes
+GET    /notes/{id}         // Get specific note
+PUT    /notes/{id}         // Update note
+DELETE /notes/{id}         // Delete note
+
+// Context Matching
+POST   /match              // Find relevant notes for current page
+
+// Media Operations
+POST   /media              // Upload screenshot/diagram
+GET    /media/{id}         // Retrieve media
+
+// Chat Operations
+POST   /chat               // Send chat message
+
+// User Operations (Optional - if using Cognito)
+POST   /auth/signup        // User registration
+POST   /auth/login         // User login
+POST   /auth/refresh       // Refresh token
+```
+
+**API Request/Response Models**
+```typescript
+// Create Note Request
+interface CreateNoteRequest {
+  content: string
+  title?: string
+  tags?: string[]
+  sourceUrl?: string
+  sourceTitle?: string
+}
+
+// Create Note Response
+interface CreateNoteResponse {
+  noteId: string
+  embedding: number[]
+  summary: string
+  topics: string[]
+  createdAt: string
+}
+
+// Match Request
+interface MatchRequest {
+  pageContent: string
+  pageUrl: string
+  pageTitle: string
+  maxResults?: number
+  threshold?: number
+}
+
+// Match Response
+interface MatchResponse {
+  matches: Array<{
+    note: Note
+    similarity: number
+    relevanceScore: number
+  }>
+  processingTime: number
+}
+
+// Chat Request
+interface ChatRequest {
+  message: string
+  pageContext?: PageContent
+  noteContext?: string[]
+}
+
+// Chat Response
+interface ChatResponse {
+  response: string
+  conversationId: string
+}
+```
+
+### 3. Lambda Backend Services
+
+**Lambda Handler (Main Entry Point)**
+```typescript
+interface LambdaHandler {
+  // Route handling
+  handleRequest(event: APIGatewayEvent): Promise<APIGatewayResponse>
   
-  // AI Integration
-  generateResponse(message: string, context: ChatContext): Promise<string>
-  suggestQuestions(notes: Note[]): string[]
+  // Service delegation
+  routeToService(path: string, method: string, body: any): Promise<any>
+}
+```
+
+**Embedding Service**
+```typescript
+interface EmbeddingService {
+  // Bedrock Integration
+  generateEmbedding(text: string): Promise<number[]>
+  batchGenerateEmbeddings(texts: string[]): Promise<number[][]>
+  
+  // Text Processing
+  cleanAndNormalizeText(text: string): string
+  chunkLongContent(text: string, maxTokens: number): string[]
+  
+  // Bedrock Configuration
+  getBedrockClient(): BedrockClient
+  setEmbeddingModel(modelId: string): void
+}
+```
+
+**Matching Service**
+```typescript
+interface MatchingService {
+  // Similarity Computation
+  findSimilarNotes(
+    queryEmbedding: number[],
+    userId: string,
+    options: SearchOptions
+  ): Promise<SearchResult[]>
+  
+  // Cosine Similarity
+  cosineSimilarity(vec1: number[], vec2: number[]): number
+  
+  // Ranking
+  rankResults(results: SearchResult[]): SearchResult[]
+  
+  // DynamoDB Integration
+  fetchUserNotes(userId: string): Promise<Note[]>
+}
+```
+
+**Chat Service**
+```typescript
+interface ChatService {
+  // LLM Integration
+  generateResponse(
+    message: string,
+    context: ChatContext
+  ): Promise<string>
+  
+  // Context Management
+  buildContextPrompt(
+    message: string,
+    notes: Note[],
+    pageContent?: PageContent
+  ): string
+  
+  // Bedrock LLM
+  callBedrockLLM(prompt: string): Promise<string>
+}
+```
+
+### 4. Amazon Bedrock Integration
+
+**Bedrock Client Configuration**
+```typescript
+interface BedrockConfig {
+  region: string
+  embeddingModel: string  // e.g., "amazon.titan-embed-text-v1"
+  llmModel: string        // e.g., "anthropic.claude-v2"
+  maxTokens: number
+  temperature: number
+}
+
+interface BedrockService {
+  // Embeddings
+  invokeEmbeddingModel(text: string): Promise<number[]>
+  
+  // Text Generation
+  invokeLLM(prompt: string, config: LLMConfig): Promise<string>
+  
+  // Summarization
+  summarizeText(text: string): Promise<string>
+  
+  // Error Handling
+  handleBedrockError(error: BedrockError): void
+}
+```
+
+### 5. Data Storage Components
+
+**DynamoDB Schema**
+
+**Notes Table**
+```typescript
+interface NotesTable {
+  // Primary Key
+  PK: string              // "USER#{userId}"
+  SK: string              // "NOTE#{noteId}"
+  
+  // Attributes
+  noteId: string
+  userId: string
+  content: string
+  title?: string
+  summary: string
+  embedding: number[]     // Stored as List of Numbers
+  tags: string[]
+  topics: string[]
+  sourceUrl?: string
+  sourceTitle?: string
+  mediaUrls?: string[]
+  createdAt: string
+  updatedAt: string
+  
+  // GSI for querying
+  GSI1PK: string         // "USER#{userId}"
+  GSI1SK: string         // "CREATED#{timestamp}"
+}
+```
+
+**Media Table**
+```typescript
+interface MediaTable {
+  // Primary Key
+  PK: string              // "USER#{userId}"
+  SK: string              // "MEDIA#{mediaId}"
+  
+  // Attributes
+  mediaId: string
+  userId: string
+  noteId?: string
+  mediaType: "screenshot" | "diagram"
+  s3Bucket: string
+  s3Key: string
+  s3Url: string
+  createdAt: string
+}
+```
+
+**DynamoDB Service**
+```typescript
+interface DynamoDBService {
+  // Note Operations
+  createNote(note: Note, embedding: number[]): Promise<string>
+  getNote(userId: string, noteId: string): Promise<Note | null>
+  updateNote(userId: string, noteId: string, updates: Partial<Note>): Promise<void>
+  deleteNote(userId: string, noteId: string): Promise<void>
+  listUserNotes(userId: string): Promise<Note[]>
+  
+  // Query Operations
+  queryNotesByDate(userId: string, startDate: string, endDate: string): Promise<Note[]>
+  queryNotesByTags(userId: string, tags: string[]): Promise<Note[]>
+  
+  // Media Operations
+  createMedia(media: Media): Promise<string>
+  getMedia(userId: string, mediaId: string): Promise<Media | null>
+}
+```
+
+**S3 Service**
+```typescript
+interface S3Service {
+  // Upload Operations
+  uploadScreenshot(userId: string, imageData: Buffer): Promise<string>
+  uploadDiagram(userId: string, diagramData: Buffer): Promise<string>
+  
+  // Retrieval Operations
+  getMediaUrl(s3Key: string): Promise<string>
+  getSignedUrl(s3Key: string, expiresIn: number): Promise<string>
+  
+  // Management
+  deleteMedia(s3Key: string): Promise<void>
+  listUserMedia(userId: string): Promise<string[]>
+}
+```
+
+### 6. Authentication (Optional - Cognito)
+
+**Cognito Integration**
+```typescript
+interface CognitoService {
+  // User Management
+  signUp(email: string, password: string): Promise<CognitoUser>
+  confirmSignUp(email: string, code: string): Promise<void>
+  signIn(email: string, password: string): Promise<AuthTokens>
+  
+  // Token Management
+  refreshToken(refreshToken: string): Promise<AuthTokens>
+  validateToken(accessToken: string): Promise<TokenPayload>
+  
+  // User Info
+  getUserId(accessToken: string): Promise<string>
+}
+
+interface AuthTokens {
+  accessToken: string
+  idToken: string
+  refreshToken: string
+  expiresIn: number
 }
 ```
 
@@ -259,23 +525,19 @@ interface ChatAssistant {
 **Note Model**
 ```typescript
 interface Note {
-  id: string
+  noteId: string
+  userId: string
   content: string
   title?: string
-  createdAt: Date
-  updatedAt: Date
+  summary: string
+  embedding: number[]
   tags: string[]
+  topics: string[]
   sourceUrl?: string
   sourceTitle?: string
-  metadata: NoteMetadata
-}
-
-interface NoteMetadata {
-  contentType: 'text' | 'code' | 'quote' | 'list'
-  language?: string
-  wordCount: number
-  readingTime: number
-  extractedTopics: string[]
+  mediaUrls?: string[]
+  createdAt: string
+  updatedAt: string
 }
 ```
 
@@ -287,115 +549,89 @@ interface PageContent {
   mainContent: string
   headings: string[]
   metadata: PageMetadata
-  extractedText: string
-  contentType: ContentType
 }
 
 interface PageMetadata {
   domain: string
-  publishDate?: Date
-  author?: string
   description?: string
   keywords: string[]
   language: string
 }
-
-type ContentType = 'article' | 'documentation' | 'research' | 'tutorial' | 'reference' | 'other'
 ```
 
-**Embedding and Search Models**
+**Search Models**
 ```typescript
-interface EmbeddingResult {
-  noteId: string
-  embedding: Float32Array
-  processingTime: number
-  modelVersion: string
-}
-
 interface SearchResult {
   note: Note
   similarity: number
   relevanceScore: number
-  matchedTopics: string[]
 }
 
 interface SearchOptions {
   threshold: number
   maxResults: number
-  includeMetadata: boolean
   filterByTags?: string[]
-  filterByDate?: DateRange
 }
 ```
 
-**Chat and Context Models**
+**Chat Models**
 ```typescript
 interface ChatMessage {
   id: string
   content: string
   role: 'user' | 'assistant'
-  timestamp: Date
-  context?: ChatContext
+  timestamp: string
 }
 
 interface ChatContext {
-  currentPage: PageContent
+  currentPage?: PageContent
   relevantNotes: Note[]
-  searchQuery?: string
   conversationHistory: ChatMessage[]
 }
 ```
 
-### Database Schema (IndexedDB)
-
-**Notes Store**
-- Primary Key: `id` (string)
-- Indexes: `createdAt`, `updatedAt`, `tags`, `sourceUrl`
-- Data: Note object + metadata
-
-**Embeddings Store**
-- Primary Key: `noteId` (string, foreign key to Notes)
-- Data: Float32Array embedding + metadata
-- Indexes: None (vector similarity search handled in memory)
-
-**User Preferences Store**
-- Primary Key: `key` (string)
-- Data: JSON serialized preferences
-- Indexes: None
-
-**Cache Store**
-- Primary Key: `cacheKey` (string)
-- Data: Cached model data, search results
-- Indexes: `expiresAt` for cleanup
-- TTL: Configurable per cache type
+**Media Model**
+```typescript
+interface Media {
+  mediaId: string
+  userId: string
+  noteId?: string
+  mediaType: 'screenshot' | 'diagram'
+  s3Bucket: string
+  s3Key: string
+  s3Url: string
+  createdAt: string
+}
+```
 
 ## Error Handling
 
 ### Error Categories and Strategies
 
-**AI Processing Errors**
-- Model loading failures: Graceful degradation to keyword-based search
-- Embedding generation errors: Retry with exponential backoff
-- Memory constraints: Chunk processing and batch size reduction
-- Model compatibility issues: Fallback to alternative models
+**AWS Service Errors**
+- Bedrock throttling: Exponential backoff with retry
+- Bedrock model errors: Fallback to alternative models
+- DynamoDB throttling: Batch write with retry logic
+- S3 upload failures: Retry with exponential backoff
+- API Gateway timeout: Client-side retry with user notification
 
-**Storage Errors**
-- IndexedDB quota exceeded: User notification with cleanup options
-- Database corruption: Automatic backup restoration
-- Network storage sync failures: Queue for retry when online
-- Data migration errors: Version-specific migration handlers
+**Extension Errors**
+- API connection failures: Queue operations for retry when online
+- Content extraction errors: Graceful degradation with partial content
+- UI injection conflicts: Namespace isolation and conflict detection
+- Browser compatibility: Feature detection and polyfills
 
-**Browser Compatibility Errors**
-- Manifest V3 compatibility: Feature detection and polyfills
-- WebAssembly support: Fallback to JavaScript-only processing
-- IndexedDB availability: Fallback to localStorage with limitations
-- Content Security Policy violations: Dynamic permission requests
+**Data Errors**
+- Invalid embedding format: Validation and error logging
+- Missing required fields: Default value assignment
+- Data corruption: Backup restoration mechanisms
+- Storage quota exceeded: User notification with cleanup options
 
-**User Interface Errors**
-- Extension injection failures: Retry with different injection strategies
-- DOM manipulation conflicts: Namespace isolation and conflict detection
-- Responsive design issues: Adaptive layout with viewport detection
-- Performance degradation: Automatic feature throttling
+**User-Facing Errors**
+- Network connectivity issues: Offline mode with sync queue
+- Authentication failures: Token refresh with re-login prompt
+- Permission denied: Clear error messages with resolution steps
+- Rate limiting: User notification with retry timing
 
 ### Error Recovery Mechanisms
 
@@ -406,17 +642,16 @@ interface ErrorHandler {
   shouldRetry(error: Error, attemptCount: number): boolean
   
   // Recovery Strategies
-  handleModelLoadError(error: ModelError): Promise<void>
-  handleStorageError(error: StorageError): Promise<void>
+  handleAWSError(error: AWSError): Promise<void>
   handleNetworkError(error: NetworkError): Promise<void>
+  handleStorageError(error: StorageError): Promise<void>
   
   // User Communication
   notifyUser(error: UserFacingError): void
   suggestRecoveryActions(error: Error): RecoveryAction[]
   
-  // Logging and Analytics
+  // Logging
   logError(error: Error, context: ErrorContext): void
-  reportCriticalError(error: CriticalError): void
 }
 ```
 
@@ -427,10 +662,10 @@ interface ErrorHandler {
 The testing strategy combines unit tests for specific functionality with property-based tests for universal correctness properties. This ensures both concrete bug detection and comprehensive input coverage.
 
 **Unit Testing Focus:**
-- Component integration points and API boundaries
+- API endpoint integration and request/response validation
+- AWS service integration (Bedrock, DynamoDB, S3)
 - Error handling and edge cases
-- Browser compatibility and extension lifecycle
-- User interface interactions and state management
+- Browser extension lifecycle and UI interactions
 - Specific examples that demonstrate correct behavior
 
 **Property-Based Testing Focus:**
@@ -442,15 +677,23 @@ The testing strategy combines unit tests for specific functionality with propert
 
 **Testing Configuration:**
 - Property tests: Minimum 100 iterations per test using fast-check library
-- Unit tests: Jest framework with browser environment simulation
-- Integration tests: Puppeteer for end-to-end extension testing
-- Performance tests: Benchmark.js for AI processing and search operations
+- Unit tests: Jest framework for Lambda functions, React Testing Library for extension UI
+- Integration tests: Postman/Newman for API testing, Puppeteer for extension E2E
+- Performance tests: Artillery for load testing API endpoints
 
 **Test Environment Setup:**
-- Mock browser extension APIs using chrome-extension-mock
-- Simulate IndexedDB using fake-indexeddb
-- Mock Transformers.js models for consistent test performance
-- Test data generators for notes, embeddings, and page content
+- Mock AWS services using aws-sdk-mock or LocalStack
+- Mock Bedrock responses for consistent test performance
+- Test DynamoDB using DynamoDB Local
+- Mock S3 using s3rver or MinIO
+- Extension testing using chrome-extension-mock
+
+**AWS-Specific Testing:**
+- Lambda function unit tests with mocked AWS SDK
+- DynamoDB integration tests with local instance
+- S3 upload/download tests with mock bucket
+- API Gateway integration tests with SAM Local
+- Bedrock mock responses for embedding and LLM calls
 
 ## Correctness Properties
 
@@ -459,56 +702,291 @@ The testing strategy combines unit tests for specific functionality with propert
 Based on the requirements analysis, the following properties ensure EchoLearn's correctness across all valid inputs and usage scenarios:
 
 ### Property 1: Note Storage Round-Trip Consistency
-*For any* valid note content, storing the note and then retrieving it should return the original content along with generated metadata (ID, timestamp, embeddings)
+*For any* valid note content, storing the note via API and then retrieving it should return the original content along with generated metadata (ID, timestamp, embeddings, summary)
 **Validates: Requirements 2.2, 2.3, 2.4**
 
-### Property 2: UI State Persistence
-*For any* notepad configuration (size, position, minimized state), the configuration should persist across browser sessions and navigation events
-**Validates: Requirements 1.2, 1.3**
+### Property 2: Embedding Generation Consistency
+*For any* text content, generating embeddings through Bedrock should produce consistent vector representations with the same dimensionality
+**Validates: Requirements 2.1, 2.5, 10.1**
 
-### Property 3: Semantic Embedding Consistency
-*For any* semantically similar text content (regardless of phrasing), the generated embeddings should have high cosine similarity (≥ 0.7)
-**Validates: Requirements 2.1, 2.5, 10.1, 10.4**
+### Property 3: Semantic Similarity Accuracy
+*For any* semantically similar text content (regardless of phrasing), the cosine similarity between their embeddings should be ≥ 0.7
+**Validates: Requirements 10.1, 10.4, 10.5**
 
-### Property 4: Context-Aware Retrieval Accuracy
-*For any* webpage content, the retrieval system should return notes ranked by semantic similarity and recency, with similarity scores above the configured threshold
+### Property 4: Context-Aware Retrieval Ranking
+*For any* webpage content, the matching API should return notes ranked by similarity score in descending order, with all results above the configured threshold
 **Validates: Requirements 3.1, 3.2, 3.3, 3.4**
 
-### Property 5: Cross-Domain Functionality
-*For any* HTTP/HTTPS website, the extension should maintain full functionality including content analysis, note retrieval, and UI accessibility
-**Validates: Requirements 5.1, 5.2, 5.5**
+### Property 5: API Response Time Compliance
+*For any* API request, the response time should meet specified limits (note creation < 3s, matching < 2s, chat < 5s)
+**Validates: Requirements 6.1, 6.2, 6.3**
 
-### Property 6: Performance Bounds Compliance
-*For any* content processing operation, the system should complete within specified time limits (content analysis < 2s, note retrieval < 1s, page load overhead < 100ms)
-**Validates: Requirements 6.1, 6.2, 6.3, 6.4**
-
-### Property 7: Note Management Operations
-*For any* stored note, all CRUD operations (create, read, update, delete) should maintain data integrity and update metadata appropriately
+### Property 6: CRUD Operations Integrity
+*For any* stored note, all CRUD operations (create, read, update, delete) via API should maintain data integrity and update metadata appropriately
 **Validates: Requirements 9.1, 9.3, 9.4**
 
-### Property 8: Search Functionality Completeness
-*For any* search query across stored notes, the system should return all relevant matches ranked by relevance score using semantic similarity
-**Validates: Requirements 9.2, 10.5**
+### Property 7: Media Storage Consistency
+*For any* uploaded screenshot or diagram, the media should be stored in S3 with metadata in DynamoDB, and retrieval should return the original content
+**Validates: Requirements 2.4, 9.5**
 
-### Property 9: Data Export Consistency
-*For any* collection of stored notes, exporting and then importing the data should preserve all note content, metadata, and relationships
+### Property 8: Cross-Domain Functionality
+*For any* HTTP/HTTPS website, the extension should successfully extract content and communicate with the backend API
+**Validates: Requirements 5.1, 5.2, 5.5**
+
+### Property 9: Chat Context Integration
+*For any* chat request, the response should incorporate relevant notes and page context when provided
+**Validates: Requirements 4.3, 4.4, 4.5**
+
+### Property 10: Data Export/Import Consistency
+*For any* collection of stored notes, exporting data from DynamoDB and re-importing should preserve all note content, embeddings, and metadata
 **Validates: Requirements 9.5**
 
-### Property 10: Chat Context Integration
-*For any* chat session, the assistant should have access to current page context and relevant stored notes for contextually appropriate responses
-**Validates: Requirements 4.3, 4.5**
+### Property 11: Error Recovery Resilience
+*For any* transient AWS service error (throttling, timeout), the system should retry with exponential backoff and eventually succeed or provide clear error messaging
+**Validates: Requirements 6.4, 7.2**
 
-### Property 11: Multi-Language Processing
-*For any* text content in supported languages, the AI engine should generate meaningful embeddings and enable cross-language semantic search
-**Validates: Requirements 10.3**
-
-### Property 12: Data Encryption Integrity
-*For any* stored note or embedding, the data should be encrypted in storage and decryptable to the original content
-**Validates: Requirements 7.5**
+### Property 12: Authentication Token Validity
+*For any* authenticated request (if using Cognito), the system should validate tokens and refresh expired tokens automatically
+**Validates: Requirements 7.1, 7.2, 7.3**
 
 **Test Configuration Requirements:**
 - Each property test must run minimum 100 iterations using fast-check library
 - Property tests must be tagged with format: **Feature: echolearn, Property {number}: {property_text}**
 - Tests must generate diverse input data including edge cases (empty content, large content, special characters, code snippets)
 - Performance properties must include load testing with realistic data volumes
-- Cross-browser compatibility testing required for Chrome and Firefox platforms
+- AWS service mocks must simulate realistic latency and error conditions
+
+
+## Deployment Architecture
+
+### AWS Infrastructure Setup
+
+**Infrastructure as Code (IaC)**
+- Use AWS SAM (Serverless Application Model) or Terraform for infrastructure provisioning
+- Version control all infrastructure code
+- Separate environments: dev, staging, production
+
+**Lambda Configuration**
+```yaml
+Runtime: Node.js 18.x
+Memory: 1024 MB (adjustable based on embedding model size)
+Timeout: 30 seconds
+Environment Variables:
+  - BEDROCK_REGION
+  - DYNAMODB_TABLE_NAME
+  - S3_BUCKET_NAME
+  - EMBEDDING_MODEL_ID
+  - LLM_MODEL_ID
+```
+
+**DynamoDB Configuration**
+```yaml
+Billing Mode: On-Demand (pay per request)
+Encryption: AWS managed keys
+Point-in-time Recovery: Enabled
+Global Secondary Indexes:
+  - GSI1: userId + createdAt (for time-based queries)
+```
+
+**S3 Configuration**
+```yaml
+Bucket: echolearn-media-{environment}
+Versioning: Enabled
+Encryption: AES-256
+Lifecycle Policy: Archive to Glacier after 90 days
+CORS: Enabled for extension access
+```
+
+**API Gateway Configuration**
+```yaml
+Type: REST API
+Stage: v1
+Throttling: 10,000 requests per second
+CORS: Enabled for extension origin
+Authorization: Cognito (optional) or API Key
+```
+
+### Deployment Pipeline
+
+**CI/CD Workflow**
+1. Code commit to GitHub
+2. Run unit tests and linting
+3. Build Lambda deployment packages
+4. Deploy to dev environment
+5. Run integration tests
+6. Manual approval for production
+7. Deploy to production
+8. Run smoke tests
+
+**Extension Deployment**
+1. Build extension bundle (webpack)
+2. Generate manifest.json with correct API endpoints
+3. Package as .zip for Chrome Web Store
+4. Submit for review
+5. Publish to store
+
+### Monitoring and Observability
+
+**CloudWatch Metrics**
+- Lambda invocation count, duration, errors
+- API Gateway request count, latency, 4xx/5xx errors
+- DynamoDB read/write capacity, throttles
+- Bedrock API calls, latency, errors
+
+**CloudWatch Logs**
+- Lambda function logs with structured logging
+- API Gateway access logs
+- Error tracking and alerting
+
+**Alarms**
+- Lambda error rate > 5%
+- API Gateway latency > 3 seconds
+- DynamoDB throttling events
+- S3 upload failures
+
+### Cost Optimization
+
+**Estimated Monthly Costs (1000 active users)**
+- Lambda: ~$20 (1M requests, 1GB memory)
+- API Gateway: ~$3.50 (1M requests)
+- DynamoDB: ~$25 (on-demand, 10M reads, 1M writes)
+- S3: ~$5 (10GB storage, 100K requests)
+- Bedrock: ~$50 (embeddings + LLM calls)
+- **Total: ~$103.50/month**
+
+**Cost Optimization Strategies**
+- Use Lambda reserved concurrency for predictable workloads
+- Implement caching for frequently accessed notes
+- Batch embedding generation requests
+- Use S3 Intelligent-Tiering for media storage
+- Monitor and optimize Bedrock token usage
+
+## Security Considerations
+
+### Data Security
+- All data encrypted at rest (DynamoDB, S3)
+- All data encrypted in transit (HTTPS/TLS)
+- Bedrock API calls use AWS IAM authentication
+- No sensitive data logged in CloudWatch
+
+### Access Control
+- Lambda functions use least-privilege IAM roles
+- API Gateway uses Cognito authorizer (optional)
+- S3 bucket policies restrict public access
+- DynamoDB uses fine-grained access control
+
+### Extension Security
+- Content Security Policy (CSP) in manifest
+- No eval() or inline scripts
+- Sanitize all user input before display
+- Validate all API responses
+- Use HTTPS for all API calls
+
+### Compliance
+- GDPR: User data deletion on request
+- Data residency: Deploy in user's region
+- Privacy policy: Clear data usage disclosure
+- Terms of service: User agreement required
+
+## Scalability Considerations
+
+### Horizontal Scaling
+- Lambda auto-scales based on request volume
+- DynamoDB on-demand scales automatically
+- S3 scales infinitely
+- API Gateway handles high throughput
+
+### Performance Optimization
+- Cache embeddings in extension local storage
+- Batch API requests where possible
+- Use DynamoDB batch operations
+- Implement pagination for large result sets
+- Use CloudFront CDN for static assets
+
+### Future Enhancements (Post-Hackathon)
+
+**Vector Database Migration**
+- Migrate from DynamoDB to OpenSearch or Pinecone
+- Improves similarity search performance
+- Enables advanced filtering and faceting
+- Architecture designed for easy swap
+
+**Advanced Features**
+- Flowchart/diagram drawing canvas
+- Spaced repetition algorithm
+- Quiz generation from notes
+- Pomodoro timer integration
+- Team collaboration features
+- Mobile app (React Native)
+
+**AI Enhancements**
+- Fine-tuned embedding models for domain-specific content
+- Multi-modal embeddings (text + images)
+- Automatic note summarization
+- Smart tagging and categorization
+- Personalized learning recommendations
+
+## Development Roadmap
+
+### Phase 1: MVP (Hackathon - 2 days)
+- [ ] Browser extension UI (floating notepad)
+- [ ] Basic note creation and storage
+- [ ] AWS Lambda backend setup
+- [ ] Bedrock integration for embeddings
+- [ ] DynamoDB schema and operations
+- [ ] Context matching API
+- [ ] Basic chat assistant
+
+### Phase 2: Core Features (Week 1-2)
+- [ ] Screenshot capture and storage
+- [ ] Diagram canvas (basic)
+- [ ] Note editing and deletion
+- [ ] Search functionality
+- [ ] Tag management
+- [ ] UI polish and responsive design
+
+### Phase 3: Advanced Features (Week 3-4)
+- [ ] User authentication (Cognito)
+- [ ] Multi-device sync
+- [ ] Export/import functionality
+- [ ] Advanced chat features
+- [ ] Performance optimization
+- [ ] Error handling improvements
+
+### Phase 4: Production Ready (Week 5-6)
+- [ ] Comprehensive testing
+- [ ] Security audit
+- [ ] Documentation
+- [ ] Chrome Web Store submission
+- [ ] Marketing materials
+- [ ] User onboarding flow
+
+## Technical Decisions and Rationale
+
+### Why AWS Over Local Processing?
+- **Scalability**: Cloud scales better than browser-based models
+- **Performance**: Bedrock models are more powerful than browser-compatible models
+- **Reliability**: AWS infrastructure is more reliable than client-side processing
+- **Features**: Easier to add advanced AI features (summarization, chat)
+- **Trade-off**: Requires internet connection, but acceptable for MVP
+
+### Why DynamoDB Over OpenSearch for MVP?
+- **Simplicity**: Easier to set up and manage
+- **Cost**: Lower cost for small scale
+- **Speed**: Fast enough for hackathon demo
+- **Flexibility**: Can migrate to OpenSearch later without product changes
+- **Trade-off**: Slower similarity search, but acceptable for MVP scale
+
+### Why Bedrock Over OpenAI?
+- **Integration**: Native AWS service, easier IAM and networking
+- **Cost**: Competitive pricing with AWS credits
+- **Compliance**: Data stays in AWS ecosystem
+- **Models**: Access to multiple model providers (Anthropic, Amazon)
+- **Trade-off**: Slightly less mature than OpenAI, but sufficient for MVP
+
+### Why React for Extension?
+- **Productivity**: Faster development with component reusability
+- **Ecosystem**: Rich library ecosystem for UI components
+- **State Management**: Easy state management with hooks
+- **Testing**: Good testing tools and practices
+- **Trade-off**: Larger bundle size, but acceptable with webpack optimization

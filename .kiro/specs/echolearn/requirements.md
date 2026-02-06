@@ -6,14 +6,17 @@ EchoLearn (RecallAI) is an AI-powered browser extension that transforms passive 
 
 ## Glossary
 
-- **Extension**: The browser extension component of EchoLearn
+- **Extension**: The browser extension component of EchoLearn (React-based UI)
 - **Notepad**: The floating, resizable interface for creating and viewing notes
-- **AI_Engine**: The semantic understanding and retrieval system
+- **Backend**: AWS Lambda functions handling API requests and AI processing
+- **Bedrock**: Amazon's AI service for embeddings generation and LLM responses
 - **Note**: Any text content, screenshot, or diagram stored by the user
-- **Context_Analyzer**: Component that analyzes current webpage content
-- **Vector_Store**: Storage system for semantic embeddings of notes
-- **Retrieval_System**: Component that matches current context to relevant stored notes
-- **Chat_Assistant**: AI-powered conversational interface for user queries
+- **Embedding**: Vector representation of text content for semantic similarity
+- **DynamoDB**: NoSQL database storing notes, metadata, and embedding vectors
+- **S3**: Object storage for screenshots and diagram images
+- **API_Gateway**: RESTful API layer between extension and backend
+- **Matching_Service**: Lambda service that computes similarity between embeddings
+- **Chat_Assistant**: AI-powered conversational interface using Bedrock LLM
 
 ## Requirements
 
@@ -35,11 +38,11 @@ EchoLearn (RecallAI) is an AI-powered browser extension that transforms passive 
 
 #### Acceptance Criteria
 
-1. WHEN a user types or pastes content into the notepad, THE AI_Engine SHALL process the content for semantic meaning
-2. WHEN content is processed, THE Vector_Store SHALL store the semantic embeddings along with the original content
-3. WHEN a note is saved, THE Extension SHALL assign a unique identifier and timestamp to the note
-4. THE Extension SHALL persist all notes across browser sessions and device restarts
-5. WHEN storing notes, THE AI_Engine SHALL extract key topics and concepts for enhanced retrieval
+1. WHEN a user types or pastes content into the notepad, THE Backend SHALL send the content to Bedrock for embedding generation
+2. WHEN embeddings are generated, THE Backend SHALL store the note content, embeddings, and metadata in DynamoDB
+3. WHEN a note is saved, THE Backend SHALL assign a unique identifier and timestamp to the note
+4. THE Backend SHALL persist all notes in DynamoDB for cross-device access
+5. WHEN storing notes, THE Backend SHALL use Bedrock to generate summaries and extract key topics for enhanced retrieval
 
 ### Requirement 3: Context-Aware Note Retrieval
 
@@ -47,11 +50,11 @@ EchoLearn (RecallAI) is an AI-powered browser extension that transforms passive 
 
 #### Acceptance Criteria
 
-1. WHEN a user navigates to a webpage, THE Context_Analyzer SHALL analyze the page content for semantic meaning
-2. WHEN page analysis is complete, THE Retrieval_System SHALL query the Vector_Store for semantically similar notes
-3. WHEN relevant notes are found, THE Extension SHALL display them in the notepad interface
-4. THE Retrieval_System SHALL rank retrieved notes by relevance score and recency
-5. WHEN no relevant notes exist, THE Extension SHALL indicate an empty state and suggest creating new notes
+1. WHEN a user navigates to a webpage, THE Extension SHALL extract page content and send it to the Backend via API_Gateway
+2. WHEN page content is received, THE Backend SHALL generate embeddings using Bedrock and fetch user notes from DynamoDB
+3. WHEN notes are fetched, THE Matching_Service SHALL compute cosine similarity between page embeddings and note embeddings
+4. THE Matching_Service SHALL rank retrieved notes by similarity score and recency, returning top matches
+5. WHEN no relevant notes exist (similarity < threshold), THE Extension SHALL indicate an empty state and suggest creating new notes
 
 ### Requirement 4: AI Chat Assistant
 
@@ -59,11 +62,11 @@ EchoLearn (RecallAI) is an AI-powered browser extension that transforms passive 
 
 #### Acceptance Criteria
 
-1. WHEN a user activates the chat feature, THE Chat_Assistant SHALL provide a conversational interface
-2. WHEN a user asks a question, THE Chat_Assistant SHALL provide contextually relevant responses
-3. THE Chat_Assistant SHALL have access to the user's stored notes for context-aware responses
-4. WHEN discussing current webpage content, THE Chat_Assistant SHALL incorporate page context into responses
-5. THE Extension SHALL maintain chat history within the current browser session
+1. WHEN a user activates the chat feature, THE Extension SHALL provide a conversational interface
+2. WHEN a user asks a question, THE Backend SHALL send the message to Bedrock LLM with relevant context
+3. THE Backend SHALL fetch relevant notes from DynamoDB and include them in the LLM prompt for context-aware responses
+4. WHEN discussing current webpage content, THE Backend SHALL incorporate page context into the LLM prompt
+5. THE Extension SHALL maintain chat history in local storage within the current browser session
 
 ### Requirement 5: Cross-Domain Functionality
 
@@ -83,11 +86,11 @@ EchoLearn (RecallAI) is an AI-powered browser extension that transforms passive 
 
 #### Acceptance Criteria
 
-1. WHEN analyzing webpage content, THE Context_Analyzer SHALL complete processing within 2 seconds
-2. WHEN retrieving relevant notes, THE Retrieval_System SHALL return results within 1 second
+1. WHEN analyzing webpage content, THE Backend SHALL complete embedding generation and matching within 2 seconds
+2. WHEN retrieving relevant notes, THE API_Gateway SHALL return results within 1 second
 3. THE Extension SHALL not significantly impact page load times (less than 100ms overhead)
-4. WHEN processing large amounts of text, THE AI_Engine SHALL handle content efficiently without blocking the UI
-5. THE Extension SHALL limit memory usage to prevent browser performance degradation
+4. WHEN processing large amounts of text, THE Backend SHALL chunk content and handle it efficiently without blocking the UI
+5. THE Extension SHALL limit memory usage and use efficient API communication to prevent browser performance degradation
 
 ### Requirement 7: Data Privacy and Security
 
@@ -95,11 +98,11 @@ EchoLearn (RecallAI) is an AI-powered browser extension that transforms passive 
 
 #### Acceptance Criteria
 
-1. THE Extension SHALL store all user data locally or in user-controlled cloud storage
-2. WHEN processing content, THE AI_Engine SHALL not transmit sensitive user data to external services without explicit consent
+1. THE Backend SHALL store all user data in AWS with encryption at rest (DynamoDB, S3)
+2. WHEN processing content, THE Backend SHALL use HTTPS/TLS for all API communication and AWS IAM for service authentication
 3. THE Extension SHALL provide clear privacy controls and data management options
-4. WHEN uninstalling, THE Extension SHALL provide options for data export or deletion
-5. THE Vector_Store SHALL encrypt stored embeddings and note content
+4. WHEN a user requests data deletion, THE Backend SHALL remove all notes, embeddings, and media from DynamoDB and S3
+5. THE Backend SHALL encrypt stored embeddings and note content using AWS managed encryption keys
 
 ### Requirement 8: Browser Extension Integration
 
@@ -120,10 +123,22 @@ EchoLearn (RecallAI) is an AI-powered browser extension that transforms passive 
 #### Acceptance Criteria
 
 1. WHEN viewing notes, THE Extension SHALL display creation timestamps and last modified dates
-2. THE Extension SHALL provide search functionality across all stored notes
-3. WHEN managing notes, THE Extension SHALL support note editing and deletion operations
-4. THE Extension SHALL allow users to manually tag or categorize notes for better organization
-5. WHEN exporting data, THE Extension SHALL provide notes in standard formats (JSON, markdown, or plain text)
+2. THE Extension SHALL provide search functionality that queries the Backend API for notes matching search terms
+3. WHEN managing notes, THE Extension SHALL support note editing and deletion operations via API calls
+4. THE Extension SHALL allow users to manually tag or categorize notes, stored in DynamoDB
+5. WHEN exporting data, THE Backend SHALL provide notes in standard formats (JSON) via export API endpoint
+
+### Requirement 11: Screenshot and Media Storage
+
+**User Story:** As a user, I want to capture screenshots and diagrams, so that I can store visual content alongside my text notes.
+
+#### Acceptance Criteria
+
+1. WHEN a user captures a screenshot, THE Extension SHALL send the image data to the Backend via API_Gateway
+2. WHEN image data is received, THE Backend SHALL upload the image to S3 and store metadata in DynamoDB
+3. THE Backend SHALL generate a unique media ID and return the S3 URL to the Extension
+4. WHEN displaying notes with media, THE Extension SHALL fetch and display images from S3 URLs
+5. WHEN a note with media is deleted, THE Backend SHALL remove both the DynamoDB record and the S3 object
 
 ### Requirement 10: AI Processing and Embeddings
 
@@ -131,8 +146,8 @@ EchoLearn (RecallAI) is an AI-powered browser extension that transforms passive 
 
 #### Acceptance Criteria
 
-1. THE AI_Engine SHALL generate consistent embeddings for similar content across different phrasings
-2. WHEN processing technical content, THE AI_Engine SHALL maintain accuracy for domain-specific terminology
-3. THE AI_Engine SHALL handle multiple languages for international users
-4. WHEN content contains code snippets, THE AI_Engine SHALL preserve technical context in embeddings
-5. THE Retrieval_System SHALL use cosine similarity or equivalent metrics for semantic matching with minimum 0.7 accuracy threshold
+1. THE Backend SHALL use Amazon Bedrock to generate consistent embeddings for similar content across different phrasings
+2. WHEN processing technical content, THE Bedrock embedding model SHALL maintain accuracy for domain-specific terminology
+3. THE Bedrock embedding model SHALL handle multiple languages for international users
+4. WHEN content contains code snippets, THE Backend SHALL preserve technical context in embeddings
+5. THE Matching_Service SHALL use cosine similarity for semantic matching with minimum 0.7 accuracy threshold
